@@ -216,7 +216,7 @@ fn process_with_pb() -> Result<(), Error> {
     };
     // 准备输出
     let output_dir = cli.output.unwrap_or("output".to_string());
-    fs::remove_dir_all(&output_dir).context(IoSnafu)?;
+    let _ = fs::remove_dir_all(&output_dir);
     fs::create_dir_all(&output_dir).context(IoSnafu)?;
     // 初始化进度条功能
     let n_input = inputs.len() as u64;

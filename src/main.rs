@@ -5,7 +5,7 @@ use image::{
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use snafu::prelude::*;
-use std::thread::{self, JoinHandle};
+use std::{fs::File, io::BufReader, thread::{self, JoinHandle}};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -275,6 +275,9 @@ fn init_pb_thread() -> (JoinHandle<()>, Sender<PBData>) {
         loop {
             match rx.recv() {
                 Ok(PBData::Stop) => {
+                    m.remove(&pb_read);
+                    m.remove(&pb_process);
+                    m.remove(&pb_comp);
                     break;
                 }
                 Ok(PBData::NewOutput(n)) => {

@@ -1,6 +1,6 @@
 [package]
 name = "image-typesetting-tool"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,3 +10,6 @@ clap = { version = "4.5.1", features = ["derive"] }
 image = "0.24.9"
 indicatif = "0.17.8"
 snafu = "0.8.1"
+
+[profile.dev.package."*"]
+opt-level = 3

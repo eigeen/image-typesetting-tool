@@ -5,7 +5,7 @@ use image::{
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use snafu::prelude::*;
-use std::{fs::File, io::BufReader, thread::{self, JoinHandle}};
+use std::thread::{self, JoinHandle};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -50,6 +50,12 @@ struct Cli {
     /// PPI 每英寸像素数 默认300PPI=118.11PPC
     #[arg(long, value_name = "PPI")]
     ppi: Option<f64>,
+    /// 横向图片数量
+    #[arg(long, value_name = "COUNT")]
+    nh: Option<u32>,
+    /// 纵向图片数量
+    #[arg(long, value_name = "COUNT")]
+    nv: Option<u32>,
 }
 
 struct Config {
@@ -67,6 +73,10 @@ struct Config {
     pub max_h_px: u32,
     /// 单图片最大宽度 像素
     pub max_w_px: u32,
+    /// 横向图片数量
+    pub n_h: u32,
+    /// 纵向图片数量
+    pub n_v: u32,
 }
 
 enum PBData {
@@ -87,10 +97,14 @@ enum PBData {
 
 impl Config {
     pub fn from_cli_default(cli: &Cli) -> Config {
+        // 横向图片数量
+        let n_h: u32 = cli.nh.unwrap_or(4);
+        // 纵向图片数量
+        let n_v: u32 = cli.nv.unwrap_or(3);
         // 单图片目标高度 厘米
-        let target_h_cm: f64 = cli.height.unwrap_or(4.5);
+        let target_h_cm: f64 = cli.height.unwrap_or(5.0);
         // 纸张外边距 单边 厘米
-        let paper_border_cm: f64 = cli.border.unwrap_or(1.0);
+        let paper_border_cm: f64 = cli.border.unwrap_or(0.8);
         // 纵向最小边距 厘米
         let min_margin_v_cm: f64 = cli.margin.unwrap_or(0.3);
         // 横向最小边距 厘米
@@ -107,13 +121,23 @@ impl Config {
         // 横向最小边距 像素
         let min_margin_h_px = (min_margin_h_cm * ppc).round() as u32;
         // 单图片目标高度 像素
-        let target_h_px = (target_h_cm * ppc).round() as u32;
+        let mut target_h_px = (target_h_cm * ppc).round() as u32;
         // 单图片最大高度 像素
-        let max_h_px =
-            ((21.0 - 2.0 * paper_border_cm - 2.0 * min_margin_v_cm) / 3.0 * ppc).round() as u32;
+        let max_h_px = ((21.0 - 2.0 * paper_border_cm - (n_v - 1) as f64 * min_margin_v_cm)
+            / n_v as f64
+            * ppc)
+            .round() as u32;
         // 单图片最大宽度 像素
-        let max_w_px =
-            ((29.7 - 2.0 * paper_border_cm - 3.0 * min_margin_h_cm) / 4.0 * ppc).round() as u32;
+        let max_w_px = ((29.7 - 2.0 * paper_border_cm - (n_h - 1) as f64 * min_margin_h_cm)
+            / n_h as f64
+            * ppc)
+            .round() as u32;
+
+        // 验证config
+        if target_h_px > max_h_px {
+            println!("单图片目标高度超过最大高度，将设置为最大高度输出");
+            target_h_px = max_h_px;
+        };
 
         Config {
             ppc,
@@ -123,6 +147,8 @@ impl Config {
             target_h_px,
             max_h_px,
             max_w_px,
+            n_h,
+            n_v,
         }
     }
 }
@@ -194,7 +220,7 @@ fn draw_canvas(
     );
     images.iter().enumerate().for_each(|(i, image)| {
         let _ = tx.send(PBData::NextComp);
-        let (row, col) = row_and_col_from_index(i);
+        let (row, col) = row_and_col_from_index(cfg.n_h as usize, i);
         let x = cfg.paper_border_px + col * (cfg.max_w_px + cfg.min_margin_h_px);
         let y = cfg.paper_border_px + row * (cfg.max_h_px + cfg.min_margin_v_px);
         imageops::overlay(&mut canvas, image, x as i64, y as i64);
@@ -208,12 +234,6 @@ fn process_with_pb() -> Result<(), Error> {
 
     let inputs = scan_inputs(&cli.input)?;
     let config = Config::from_cli_default(&cli);
-    // 验证config
-    if config.target_h_px > config.max_h_px {
-        return Err(Error::Input {
-            reason: "单图片目标高度超过最大高度，请调整目标高度或纸张大小".to_string(),
-        });
-    };
     // 准备输出
     let output_dir = cli.output.unwrap_or("output".to_string());
     let _ = fs::remove_dir_all(&output_dir);
@@ -225,7 +245,8 @@ fn process_with_pb() -> Result<(), Error> {
     let _ = tx.send(PBData::NewOutput(n_batch));
 
     // 分批绘制
-    let batch_inputs_iter = BatchIter::new(inputs.into_iter(), 12);
+    let batch_size = (config.n_h * config.n_v) as usize;
+    let batch_inputs_iter = BatchIter::new(inputs.into_iter(), batch_size);
     for (i, batch_inputs) in batch_inputs_iter.enumerate() {
         let n = batch_inputs.len() as u64;
         let _ = tx.send(PBData::NewRead(n));
@@ -328,10 +349,15 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn row_and_col_from_index(idx: usize) -> (u32, u32) {
-    // 三行四列，先行后列
-    let row = (idx / 4) as u32;
-    let col = (idx % 4) as u32;
+/// 通过索引获取当前行列号
+///
+/// 先行后列
+///
+/// - nh: 横向数量
+/// - idx: 当前索引
+fn row_and_col_from_index(nh: usize, idx: usize) -> (u32, u32) {
+    let row = (idx / nh) as u32;
+    let col = (idx % nh) as u32;
 
     (row, col)
 }
@@ -342,8 +368,8 @@ mod tests {
 
     #[test]
     fn test_row_and_col_from_index() {
-        assert!(row_and_col_from_index(0) == (0, 0));
-        assert!(row_and_col_from_index(3) == (0, 3));
-        assert!(row_and_col_from_index(11) == (2, 3));
+        assert!(row_and_col_from_index(4, 0) == (0, 0));
+        assert!(row_and_col_from_index(4, 3) == (0, 3));
+        assert!(row_and_col_from_index(4, 11) == (2, 3));
     }
 }
